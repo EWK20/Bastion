@@ -12,11 +12,33 @@ terraform {
   required_version = ">= 1.2.0"
 }
 
-provider "aws" {
-  region     = "us-east-1"
-  access_key = var.ACCESS_KEY
-  secret_key = var.SECRET_KEY
+variable "region" {
+  type    = string
+  default = "us-east-1"
 }
+
+provider "aws" {
+  region = var.region
+}
+
+#*Variables Section
+variable "internet_cidr_block" {
+  type    = string
+  default = "0.0.0.0/0"
+}
+variable "private_subnet" {
+  type = map(any)
+}
+variable "public_subnet" {
+  type = map(any)
+}
+variable "authorized_ip" {
+  type = list(string)
+}
+variable "instance_details" {
+  type = map(any)
+}
+
 
 #* Create an SSH key for bastion servers
 resource "tls_private_key" "bastion_key" {
@@ -90,22 +112,24 @@ resource "aws_vpc" "custom_vpc" {
 
 #* Create a private subnet
 resource "aws_subnet" "private_subnet" {
+  for_each          = var.private_subnet
   vpc_id            = aws_vpc.custom_vpc.id
-  cidr_block        = "10.0.1.0/24"
-  availability_zone = "us-east-1a"
+  cidr_block        = each.value.cidr_block
+  availability_zone = each.value.availability_zone
   tags = {
-    Name = "private_subnet"
+    Name = "${each.key}_subnet"
   }
 }
 
 #* Create a public subnet
 resource "aws_subnet" "public_subnet" {
+  for_each                = var.public_subnet
   vpc_id                  = aws_vpc.custom_vpc.id
-  cidr_block              = "10.0.2.0/24"
-  map_public_ip_on_launch = true
-  availability_zone       = "us-east-1a"
+  cidr_block              = each.value.cidr_block
+  map_public_ip_on_launch = each.value.public
+  availability_zone       = each.value.availability_zone
   tags = {
-    Name = "public_subnet"
+    Name = "${each.key}_subnet"
   }
 }
 
@@ -119,7 +143,7 @@ resource "aws_route_table" "custom_route_table" {
   vpc_id = aws_vpc.custom_vpc.id
 
   route {
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.internet_cidr_block
     gateway_id = aws_internet_gateway.custom_igw.id
   }
 
@@ -130,7 +154,8 @@ resource "aws_route_table" "custom_route_table" {
 
 #* Associate new route table with public subnet
 resource "aws_route_table_association" "public_rtb_association" {
-  subnet_id      = aws_subnet.public_subnet.id
+  for_each       = var.public_subnet
+  subnet_id      = aws_subnet.public_subnet[each.key].id
   route_table_id = aws_route_table.custom_route_table.id
 }
 
@@ -144,14 +169,14 @@ resource "aws_security_group" "bastion_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["79.69.78.28/32"]
+    cidr_blocks = var.authorized_ip
   }
 
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.internet_cidr_block]
   }
 
   tags = {
@@ -176,14 +201,14 @@ resource "aws_security_group" "webserver_sg" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.internet_cidr_block]
     description = "Allow HTTP from internet"
   }
   ingress {
     from_port   = -1
     to_port     = -1
     protocol    = "icmp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.internet_cidr_block]
     description = "Allow ICMP from internet"
   }
 
@@ -191,7 +216,7 @@ resource "aws_security_group" "webserver_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.internet_cidr_block]
   }
 
   tags = {
@@ -224,7 +249,7 @@ resource "aws_security_group" "backend_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.internet_cidr_block]
   }
 
   tags = {
@@ -232,60 +257,76 @@ resource "aws_security_group" "backend_sg" {
   }
 }
 
-#* Create bastion server
-resource "aws_instance" "bastion" {
-  ami             = "ami-0889a44b331db0194"
-  instance_type   = "t2.micro"
-  key_name        = aws_key_pair.bastion_key_public.key_name
-  subnet_id       = aws_subnet.public_subnet.id
-  security_groups = [aws_security_group.bastion_sg.id]
+resource "aws_instance" "instance_creation" {
+  for_each        = var.instance_details
+  ami             = each.value.ami
+  instance_type   = each.value.instance_type
+  key_name        = each.key == "Bastion" ? aws_key_pair.bastion_key_public.key_name : each.key == "WebServer" ? aws_key_pair.webserver_key_public.key_name : aws_key_pair.backend_key_public.key_name
+  subnet_id       = each.key == "WebServer" || each.key == "Bastion" ? aws_subnet.public_subnet["public"].id : aws_subnet.private_subnet["private"].id
+  security_groups = [each.key == "Bastion" ? aws_security_group.bastion_sg.id : each.key == "WebServer" ? aws_security_group.webserver_sg.id : aws_security_group.backend_sg.id]
+  user_data       = each.value.user_data != "" ? file(each.value.user_data) : ""
 
   tags = {
-    Name = "Bastion Server"
+    Name = each.value.name
   }
 }
 
-#* Create web server
-resource "aws_instance" "web_server" {
-  ami             = "ami-0889a44b331db0194"
-  instance_type   = "t2.micro"
-  key_name        = aws_key_pair.webserver_key_public.key_name
-  subnet_id       = aws_subnet.public_subnet.id
-  security_groups = [aws_security_group.webserver_sg.id]
-  user_data       = file("WebServerData.txt")
+# #* Create bastion server
+# resource "aws_instance" "bastion" {
+#   ami             = "ami-0889a44b331db0194"
+#   instance_type   = "t2.micro"
+#   key_name        = aws_key_pair.bastion_key_public.key_name
+#   subnet_id       = aws_subnet.public_subnet.id
+#   security_groups = [aws_security_group.bastion_sg.id]
 
-  tags = {
-    Name = "Web Server"
-  }
-}
+#   tags = {
+#     Name = "Bastion Server"
+#   }
+# }
 
-#* Create backend server
-resource "aws_instance" "backend_server" {
-  ami             = "ami-0889a44b331db0194"
-  instance_type   = "t2.micro"
-  key_name        = aws_key_pair.backend_key_public.key_name
-  subnet_id       = aws_subnet.private_subnet.id
-  security_groups = [aws_security_group.backend_sg.id]
+# #* Create web server
+# resource "aws_instance" "web_server" {
+#   ami             = "ami-0889a44b331db0194"
+#   instance_type   = "t2.micro"
+#   key_name        = aws_key_pair.webserver_key_public.key_name
+#   subnet_id       = aws_subnet.public_subnet.id
+#   security_groups = [aws_security_group.webserver_sg.id]
+#   user_data       = file("WebServerData.txt")
 
-  tags = {
-    Name = "Backend Server"
-  }
-}
+#   tags = {
+#     Name = "Web Server"
+#   }
+# }
+
+# #* Create backend server
+# resource "aws_instance" "backend_server" {
+#   ami             = "ami-0889a44b331db0194"
+#   instance_type   = "t2.micro"
+#   key_name        = aws_key_pair.backend_key_public.key_name
+#   subnet_id       = aws_subnet.private_subnet.id
+#   security_groups = [aws_security_group.backend_sg.id]
+
+#   tags = {
+#     Name = "Backend Server"
+#   }
+# }
 
 #* Allocate elastic ip
 resource "aws_eip" "nat_ip" {}
 
 #* Create NAT gateway
 resource "aws_nat_gateway" "backend_nat" {
+  for_each      = var.public_subnet
   allocation_id = aws_eip.nat_ip.id
-  subnet_id     = aws_subnet.public_subnet.id
+  subnet_id     = aws_subnet.public_subnet[each.key].id
 }
 
 resource "aws_default_route_table" "nat_association" {
+  for_each               = aws_nat_gateway.backend_nat
   default_route_table_id = aws_vpc.custom_vpc.default_route_table_id
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.backend_nat.id
+    nat_gateway_id = aws_nat_gateway.backend_nat[each.key].id
   }
 }
