@@ -12,19 +12,18 @@ terraform {
   required_version = ">= 1.2.0"
 }
 
+
+#*Variables Section
 variable "region" {
   type    = string
   default = "us-east-1"
 }
-
-provider "aws" {
-  region = var.region
-}
-
-#*Variables Section
 variable "internet_cidr_block" {
   type    = string
   default = "0.0.0.0/0"
+}
+variable "vpc_details" {
+  type = map(any)
 }
 variable "private_subnet" {
   type = map(any)
@@ -39,6 +38,10 @@ variable "instance_details" {
   type = map(any)
 }
 
+
+provider "aws" {
+  region = var.region
+}
 
 #* Create an SSH key for bastion servers
 resource "tls_private_key" "bastion_key" {
@@ -102,11 +105,12 @@ resource "aws_key_pair" "backend_key_public" {
 
 #* Create virtual network (VPC)
 resource "aws_vpc" "custom_vpc" {
-  cidr_block           = "10.0.0.0/16"
+  for_each             = var.vpc_details
+  cidr_block           = each.value.cidr_block
   enable_dns_support   = true
   enable_dns_hostnames = true
   tags = {
-    Name = "custom_vpc"
+    Name = each.value.name
   }
 }
 
@@ -271,45 +275,6 @@ resource "aws_instance" "instance_creation" {
   }
 }
 
-# #* Create bastion server
-# resource "aws_instance" "bastion" {
-#   ami             = "ami-0889a44b331db0194"
-#   instance_type   = "t2.micro"
-#   key_name        = aws_key_pair.bastion_key_public.key_name
-#   subnet_id       = aws_subnet.public_subnet.id
-#   security_groups = [aws_security_group.bastion_sg.id]
-
-#   tags = {
-#     Name = "Bastion Server"
-#   }
-# }
-
-# #* Create web server
-# resource "aws_instance" "web_server" {
-#   ami             = "ami-0889a44b331db0194"
-#   instance_type   = "t2.micro"
-#   key_name        = aws_key_pair.webserver_key_public.key_name
-#   subnet_id       = aws_subnet.public_subnet.id
-#   security_groups = [aws_security_group.webserver_sg.id]
-#   user_data       = file("WebServerData.txt")
-
-#   tags = {
-#     Name = "Web Server"
-#   }
-# }
-
-# #* Create backend server
-# resource "aws_instance" "backend_server" {
-#   ami             = "ami-0889a44b331db0194"
-#   instance_type   = "t2.micro"
-#   key_name        = aws_key_pair.backend_key_public.key_name
-#   subnet_id       = aws_subnet.private_subnet.id
-#   security_groups = [aws_security_group.backend_sg.id]
-
-#   tags = {
-#     Name = "Backend Server"
-#   }
-# }
 
 #* Allocate elastic ip
 resource "aws_eip" "nat_ip" {}

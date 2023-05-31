@@ -1,5 +1,11 @@
 region="us-east-1"
 internet_cidr_block="0.0.0.0/0"
+vpc_details={
+  vpc = {
+    cidr_block="10.0.0.0/16"
+    name="custom_vpc"
+    }
+}
 private_subnet={
     private = {
       cidr_block        = "10.0.1.0/24"
