@@ -261,6 +261,7 @@ resource "aws_security_group" "backend_sg" {
   }
 }
 
+#* Create Instances
 resource "aws_instance" "instance_creation" {
   for_each        = var.instance_details
   ami             = each.value.ami
